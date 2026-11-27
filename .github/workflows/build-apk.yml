@@ -1,0 +1,73 @@
+name: Build APK
+
+# 在 GitHub 上打 debug APK，手机上操作:
+#   仓库页面 → Actions → Build APK → Run workflow（点绿色按钮）
+#   跑完后进入那次运行，页面最下面 Artifacts 里下载 sth-key-debug-apk
+# 也会在 push 到 master / main 时自动跑。
+on:
+  workflow_dispatch:
+  push:
+    branches: [ master, main ]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      # ubuntu-latest 自带 Android SDK（/usr/local/lib/android/sdk）。
+      # setup-android 在更新 cmdline-tools 时 sdkmanager 可能退出码 1 导致整个流程失败，
+      # 所以这一步失败不拦截；下一步会用自带的 SDK 接受许可协议，Gradle 会自动补装缺失组件。
+      - name: Set up Android SDK
+        continue-on-error: true
+        uses: android-actions/setup-android@v3
+
+      - name: Accept Android SDK licenses
+        shell: bash
+        run: |
+          set +o pipefail
+          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          SDKMANAGER="$(command -v sdkmanager || true)"
+          if [ -z "$SDKMANAGER" ]; then
+            SDKMANAGER="$(ls -d "$SDK_ROOT"/cmdline-tools/*/bin/sdkmanager 2>/dev/null | sort -V | tail -n 1)"
+          fi
+          echo "ANDROID SDK ROOT: $SDK_ROOT"
+          echo "sdkmanager: $SDKMANAGER"
+          yes | "$SDKMANAGER" --sdk_root="$SDK_ROOT" --licenses > /dev/null || true
+          echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
+
+      # 不用仓库里的 ./gradlew：gradle-wrapper.properties 指向阿里云镜像，
+      # 在 GitHub 海外机器上可能很慢或超时。这里直接装同一个版本的 Gradle。
+      - name: Set up Gradle 9.4.1
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 9.4.1
+
+      - name: Build debug APK
+        run: gradle assembleDebug --no-daemon --stacktrace
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: sth-key-debug-apk
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+
+      # 单元测试放在打包之后，而且失败不拦截 APK（APK 已经上传了）。
+      # 想让测试失败时整个流程变红，把下面这行 continue-on-error 删掉即可。
+      - name: Unit tests
+        continue-on-error: true
+        run: gradle testDebugUnitTest --no-daemon --stacktrace
