@@ -56,18 +56,36 @@ jobs:
         with:
           gradle-version: 9.4.1
 
+      # Gradle 要求目录里有 settings.gradle(.kts)。这里自动找到它所在的目录（根目录或子目录均可）；
+      # 找不到就列出仓库文件并给出明确提示，而不是让 Gradle 报一串堆栈。
+      - name: Locate Gradle project
+        shell: bash
+        run: |
+          SETTINGS="$(find . -maxdepth 3 -type f \( -name 'settings.gradle' -o -name 'settings.gradle.kts' \) -not -path './.git/*' | sort | head -n 1)"
+          if [ -z "$SETTINGS" ]; then
+            echo "::error::仓库里找不到 settings.gradle(.kts)，说明完整的 Android 工程文件没有提交到仓库（只传了部分文件）。"
+            echo "当前仓库文件如下："
+            find . -type f -not -path './.git/*' | sort | head -n 200
+            exit 1
+          fi
+          DIR="$(dirname "$SETTINGS")"
+          echo "Gradle project dir: $DIR"
+          echo "PROJECT_DIR=$DIR" >> "$GITHUB_ENV"
+
       - name: Build debug APK
+        working-directory: ${{ env.PROJECT_DIR }}
         run: gradle assembleDebug --no-daemon --stacktrace
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: sth-key-debug-apk
-          path: app/build/outputs/apk/debug/*.apk
+          path: ${{ env.PROJECT_DIR }}/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
 
       # 单元测试放在打包之后，而且失败不拦截 APK（APK 已经上传了）。
       # 想让测试失败时整个流程变红，把下面这行 continue-on-error 删掉即可。
       - name: Unit tests
         continue-on-error: true
+        working-directory: ${{ env.PROJECT_DIR }}
         run: gradle testDebugUnitTest --no-daemon --stacktrace
